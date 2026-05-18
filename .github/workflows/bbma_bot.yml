@@ -1,66 +1,69 @@
 name: BBMA Bot — Siklus 1h Nyala / 4h Mati
 
 # ─────────────────────────────────────────────────────────────
-#  Jadwal cron UTC:
-#  Siklus 5 jam — nyala tiap jam ke-0 dari siklus:
-#    00:00  05:00  10:00  15:00  20:00
-#  Bot akan berjalan MAKS 60 menit, lalu otomatis mati.
-#  GitHub Actions max job = 6 jam, tapi kita timeout di 60 menit.
+#  FIX ERROR 451: GitHub Actions pakai server Azure US → diblokir
+#  Binance. Solusi: Tor proxy agar IP tampak dari negara lain.
 # ─────────────────────────────────────────────────────────────
 on:
   schedule:
-    - cron: '0 0 * * *'   # 00:00 UTC
-    - cron: '0 5 * * *'   # 05:00 UTC
-    - cron: '0 10 * * *'  # 10:00 UTC
-    - cron: '0 15 * * *'  # 15:00 UTC
-    - cron: '0 20 * * *'  # 20:00 UTC
-
-  # Tombol manual — bisa dipicu dari tab "Actions" GitHub
+    - cron: '0 0 * * *'
+    - cron: '0 5 * * *'
+    - cron: '0 10 * * *'
+    - cron: '0 15 * * *'
+    - cron: '0 20 * * *'
   workflow_dispatch:
 
-# Pastikan hanya 1 instance berjalan sekaligus
 concurrency:
   group: bbma-bot-singleton
-  cancel-in-progress: false   # Jangan batalkan yg sedang jalan
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     name: Jalankan BBMA Bot (maks 60 menit)
     runs-on: ubuntu-latest
-
-    # Hard limit: matikan job setelah 65 menit (5 menit buffer)
     timeout-minutes: 65
 
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────
       - name: Checkout kode
         uses: actions/checkout@v4
 
-      # ── 2. Setup Python ─────────────────────────────────────
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ── 3. Install dependencies ──────────────────────────────
+      - name: Install dan jalankan Tor proxy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tor curl
+          sudo service tor start
+          echo "Menunggu Tor bootstrap..."
+          for i in $(seq 1 30); do
+            IP=$(curl --silent --max-time 5 --socks5-hostname 127.0.0.1:9050 \
+                 https://check.torproject.org/api/ip 2>/dev/null || true)
+            if echo "$IP" | grep -q '"IsTor":true'; then
+              echo "Tor aktif: $IP"
+              break
+            fi
+            echo "Tunggu Tor ($i/30)..."
+            sleep 2
+          done
+
       - name: Install library Python
         run: |
           pip install --upgrade pip
-          pip install ccxt pandas mplfinance requests numpy websocket-client
+          pip install ccxt pandas mplfinance requests numpy websocket-client PySocks
 
-      # ── 4. Restore state & data dari cache ──────────────────
-      - name: Restore state cache (sinyal terproses)
+      - name: Restore state cache
         uses: actions/cache@v4
         with:
-          path: |
-            bbma_data/
+          path: bbma_data/
           key: bbma-state-${{ runner.os }}
           restore-keys: |
             bbma-state-
 
-      # ── 5. Jalankan bot dengan timeout 60 menit ──────────────
-      - name: Jalankan bot (timeout 60 menit)
+      - name: Jalankan bot via Tor (timeout 60 menit)
         env:
           BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
@@ -68,23 +71,22 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_COLOR:        '0'
           PYTHONUNBUFFERED:   '1'
+          HTTP_PROXY:         'socks5h://127.0.0.1:9050'
+          HTTPS_PROXY:        'socks5h://127.0.0.1:9050'
+          ALL_PROXY:          'socks5h://127.0.0.1:9050'
         run: |
-          echo "▶ Bot mulai: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          # timeout 3600 = 60 menit, lalu kirim SIGTERM ke bot
+          echo "Bot mulai: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           timeout 3600 python bbma_bot_top100.py || true
-          echo "■ Bot selesai / timeout: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Bot selesai: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
-      # ── 6. Simpan state ke cache setelah bot mati ────────────
       - name: Simpan state cache
         if: always()
         uses: actions/cache@v4
         with:
-          path: |
-            bbma_data/
+          path: bbma_data/
           key: bbma-state-${{ runner.os }}
 
-      # ── 7. Upload log chart sebagai artifact (opsional) ──────
-      - name: Upload chart sebagai artifact
+      - name: Upload chart artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
