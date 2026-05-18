@@ -1,0 +1,6 @@
+ccxt>=4.3.0
+pandas>=2.0.0
+mplfinance>=0.12.10b0
+requests>=2.31.0
+numpy>=1.26.0
+websocket-client>=1.7.0
